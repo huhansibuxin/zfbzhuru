@@ -7,15 +7,19 @@
 #import <objc/runtime.h>
 #import <time.h>
 
-// ========== 文件日志（oslog 抓不到注入 dylib 的 NSLog） ==========
-#define LOG_PATH @"/var/mobile/Documents/BlockAlipay_debug.log"
+// ========== 文件日志（沙盒 Documents，注入 dylib 不能写系统目录） ==========
 #define LOG_MAX_SIZE (512 * 1024)
 #define LOG_KEEP_SIZE (256 * 1024)
 
 static NSFileHandle *logHandle = nil;
 static NSDateFormatter *logFmt = nil;
+static NSString *logPath = nil;
 
 static void BA_Log(NSString *fmt, ...) {
+    if (!logPath) {
+        NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+        logPath = [docs stringByAppendingPathComponent:@"BlockAlipay_debug.log"];
+    }
     va_list args;
     va_start(args, fmt);
     NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
@@ -26,18 +30,18 @@ static void BA_Log(NSString *fmt, ...) {
     }
     NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [logFmt stringFromDate:[NSDate date]], msg];
     @try {
-        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:LOG_PATH error:nil];
+        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:logPath error:nil];
         if (attr && [attr[NSFileSize] unsignedLongLongValue] > LOG_MAX_SIZE) {
-            NSData *existing = [NSData dataWithContentsOfFile:LOG_PATH];
+            NSData *existing = [NSData dataWithContentsOfFile:logPath];
             NSUInteger keepStart = existing.length > LOG_KEEP_SIZE ? existing.length - LOG_KEEP_SIZE : 0;
             NSData *keep = [existing subdataWithRange:NSMakeRange(keepStart, existing.length - keepStart)];
-            [keep writeToFile:LOG_PATH atomically:YES];
-            logHandle = [NSFileHandle fileHandleForWritingAtPath:LOG_PATH];
+            [keep writeToFile:logPath atomically:YES];
+            logHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
             [logHandle seekToEndOfFile];
         }
         if (!logHandle) {
-            [[NSFileManager defaultManager] createFileAtPath:LOG_PATH contents:nil attributes:nil];
-            logHandle = [NSFileHandle fileHandleForWritingAtPath:LOG_PATH];
+            [[NSFileManager defaultManager] createFileAtPath:logPath contents:nil attributes:nil];
+            logHandle = [NSFileHandle fileHandleForWritingAtPath:logPath];
             [logHandle seekToEndOfFile];
         }
         [logHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
