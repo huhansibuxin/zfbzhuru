@@ -31,9 +31,10 @@ static void FloodTick(void) {
     }
 }
 
-// ========== 1. 拦截静默推送（运行时 hook AppDelegate） ==========
+// ========== 1. 静默推送拦截（运行时 hook AppDelegate） ==========
 static IMP orig_DidFinishLaunching = NULL;
 static IMP orig_DidReceiveRemote = NULL;
+static IMP orig_SetDelegate = NULL;
 
 static BOOL hook_DidFinishLaunching(id self, SEL _cmd, UIApplication *app, NSDictionary *opts) {
     NSDictionary *push = opts[UIApplicationLaunchOptionsRemoteNotificationKey];
@@ -56,6 +57,29 @@ static void hook_DidReceiveRemote(id self, SEL _cmd, UIApplication *app, NSDicti
         return;
     }
     ((void(*)(id,SEL,UIApplication*,NSDictionary*,void(^)(UIBackgroundFetchResult)))orig_DidReceiveRemote)(self, _cmd, app, info, done);
+}
+
+static void hook_SetDelegate(id self, SEL _cmd, id delegate) {
+    if (orig_SetDelegate) {
+        ((void(*)(id,SEL,id))orig_SetDelegate)(self, _cmd, delegate);
+    }
+    if (!delegate) return;
+    Class cls = [delegate class];
+    Method m;
+
+    m = class_getInstanceMethod(cls, @selector(application:didFinishLaunchingWithOptions:));
+    if (m && !orig_DidFinishLaunching) {
+        orig_DidFinishLaunching = method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_DidFinishLaunching);
+    }
+
+    m = class_getInstanceMethod(cls, @selector(application:didReceiveRemoteNotification:fetchCompletionHandler:));
+    if (m && !orig_DidReceiveRemote) {
+        orig_DidReceiveRemote = method_getImplementation(m);
+        method_setImplementation(m, (IMP)hook_DidReceiveRemote);
+    }
+
+    NSLog(@"[BlockAlipay] AppDelegate hooks installed on %@", NSStringFromClass(cls));
 }
 
 // ========== 2. 拦截 BG 后台任务 ==========
@@ -85,31 +109,8 @@ static void hook_DidReceiveRemote(id self, SEL _cmd, UIApplication *app, NSDicti
 }
 %end
 
-// ========== 5. 入口：拦截 delegate 注入点 ==========
+// ========== 5. 入口 ==========
 %ctor {
-    // Step A: 拦截 UIApplication setDelegate，在 delegate 被设置时自动注入 hook
-    static IMP orig_SetDelegate = NULL;
-    static void hook_SetDelegate(id self, SEL _cmd, id delegate) {
-        if (orig_SetDelegate) {
-            ((void(*)(id,SEL,id))orig_SetDelegate)(self, _cmd, delegate);
-        }
-        if (!delegate) return;
-        Class cls = [delegate class];
-        Method m;
-
-        m = class_getInstanceMethod(cls, @selector(application:didFinishLaunchingWithOptions:));
-        if (m && !orig_DidFinishLaunching) {
-            orig_DidFinishLaunching = method_getImplementation(m);
-            method_setImplementation(m, (IMP)hook_DidFinishLaunching);
-        }
-
-        m = class_getInstanceMethod(cls, @selector(application:didReceiveRemoteNotification:fetchCompletionHandler:));
-        if (m && !orig_DidReceiveRemote) {
-            orig_DidReceiveRemote = method_getImplementation(m);
-            method_setImplementation(m, (IMP)hook_DidReceiveRemote);
-        }
-    }
-
     Method sm = class_getInstanceMethod([UIApplication class], @selector(setDelegate:));
     if (sm) {
         orig_SetDelegate = method_getImplementation(sm);
