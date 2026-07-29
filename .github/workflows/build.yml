@@ -1,0 +1,20 @@
+name: Build
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: brew install dpkg ldid
+      - name: Clone theos
+        run: git clone --recurse-submodules https://github.com/theos/theos.git ${{ github.workspace }}/theos
+      - name: Build
+        run: make package
+        env:
+          THEOS: ${{ github.workspace }}/theos
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlockAlipayApp-deb
+          path: packages/*.deb

@@ -1,0 +1,8 @@
+Package: com.block.alipay.app
+Name: BlockAlipayApp
+Version: 1.1
+Architecture: iphoneos-arm64
+Depends: mobilesubstrate
+Description: 支付宝内部拦截｜BGTask/静默推送/网络/位置唤醒
+Maintainer: Dev
+Section: Tweaks
