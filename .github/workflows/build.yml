@@ -8,7 +8,16 @@ jobs:
       - name: Install deps
         run: brew install dpkg ldid
       - name: Clone theos
-        run: git clone --recurse-submodules https://github.com/theos/theos.git ${{ github.workspace }}/theos
+        run: git clone --recurse-submodules https://github.com/theos/theos.git $THEOS
+        env:
+          THEOS: ${{ github.workspace }}/theos
+      - name: Install SDK
+        run: |
+          curl -LO https://github.com/theos/sdks/archive/master.zip
+          unzip master.zip
+          mv sdks-master/iPhoneOS16.5.sdk $THEOS/sdks/
+        env:
+          THEOS: ${{ github.workspace }}/theos
       - name: Build
         run: make package
         env:
