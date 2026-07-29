@@ -7,6 +7,43 @@
 #import <objc/runtime.h>
 #import <time.h>
 
+// ========== 文件日志（oslog 抓不到注入 dylib 的 NSLog） ==========
+#define LOG_PATH @"/var/mobile/Documents/BlockAlipay_debug.log"
+#define LOG_MAX_SIZE (512 * 1024)
+#define LOG_KEEP_SIZE (256 * 1024)
+
+static NSFileHandle *logHandle = nil;
+static NSDateFormatter *logFmt = nil;
+
+static void BA_Log(NSString *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    NSString *msg = [[NSString alloc] initWithFormat:fmt arguments:args];
+    va_end(args);
+    if (!logFmt) {
+        logFmt = [NSDateFormatter new];
+        logFmt.dateFormat = @"MM-dd HH:mm:ss";
+    }
+    NSString *line = [NSString stringWithFormat:@"[%@] %@\n", [logFmt stringFromDate:[NSDate date]], msg];
+    @try {
+        NSDictionary *attr = [[NSFileManager defaultManager] attributesOfItemAtPath:LOG_PATH error:nil];
+        if (attr && [attr[NSFileSize] unsignedLongLongValue] > LOG_MAX_SIZE) {
+            NSData *existing = [NSData dataWithContentsOfFile:LOG_PATH];
+            NSUInteger keepStart = existing.length > LOG_KEEP_SIZE ? existing.length - LOG_KEEP_SIZE : 0;
+            NSData *keep = [existing subdataWithRange:NSMakeRange(keepStart, existing.length - keepStart)];
+            [keep writeToFile:LOG_PATH atomically:YES];
+            logHandle = [NSFileHandle fileHandleForWritingAtPath:LOG_PATH];
+            [logHandle seekToEndOfFile];
+        }
+        if (!logHandle) {
+            [[NSFileManager defaultManager] createFileAtPath:LOG_PATH contents:nil attributes:nil];
+            logHandle = [NSFileHandle fileHandleForWritingAtPath:LOG_PATH];
+            [logHandle seekToEndOfFile];
+        }
+        [logHandle writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    } @catch (NSException *e) {}
+}
+
 // ========== 限流配置 ==========
 #define FLOOD_INTERVAL 3
 #define FLOOD_MAX_COUNT 2
@@ -27,11 +64,11 @@ static void FloodTick(void) {
     triggerCount++;
     if (triggerCount >= FLOOD_MAX_COUNT) {
         blockUntilTime = now + BLOCK_DURATION;
-        NSLog(@"[BlockAlipay] 频繁唤醒，封锁 %ds", BLOCK_DURATION);
+        BA_Log(@"频繁唤醒，封锁 %ds", BLOCK_DURATION);
     }
 }
 
-// ========== 1. 静默推送拦截（运行时 hook AppDelegate） ==========
+// ========== 1. 静默推送拦截 ==========
 static IMP orig_DidFinishLaunching = NULL;
 static IMP orig_DidReceiveRemote = NULL;
 static IMP orig_SetDelegate = NULL;
@@ -39,10 +76,10 @@ static IMP orig_SetDelegate = NULL;
 static BOOL hook_DidFinishLaunching(id self, SEL _cmd, UIApplication *app, NSDictionary *opts) {
     NSDictionary *push = opts[UIApplicationLaunchOptionsRemoteNotificationKey];
     if (push && push[@"aps"] && push[@"aps"][@"content-available"]) {
-        NSLog(@"[BlockAlipay] 静默推送冷启动，退出进程");
+        BA_Log(@"静默推送冷启动，退出进程");
         FloodTick();
         if (FloodLocked()) {
-            NSLog(@"[BlockAlipay] 封锁期内，直接退出");
+            BA_Log(@"封锁期内，直接退出");
         }
         exit(0);
     }
@@ -51,7 +88,7 @@ static BOOL hook_DidFinishLaunching(id self, SEL _cmd, UIApplication *app, NSDic
 
 static void hook_DidReceiveRemote(id self, SEL _cmd, UIApplication *app, NSDictionary *info, void (^done)(UIBackgroundFetchResult)) {
     if (info[@"aps"] && info[@"aps"][@"content-available"]) {
-        NSLog(@"[BlockAlipay] 后台静默推送，丢弃");
+        BA_Log(@"后台静默推送，丢弃");
         FloodTick();
         done(UIBackgroundFetchResultNoData);
         return;
@@ -79,43 +116,46 @@ static void hook_SetDelegate(id self, SEL _cmd, id delegate) {
         method_setImplementation(m, (IMP)hook_DidReceiveRemote);
     }
 
-    NSLog(@"[BlockAlipay] AppDelegate hooks installed on %@", NSStringFromClass(cls));
+    BA_Log(@"AppDelegate hooks installed on %@", NSStringFromClass(cls));
 }
 
-// ========== 2. 拦截 BG 后台任务 ==========
+// ========== 2. BGTask ==========
 %hook BGTaskScheduler
 - (BOOL)submitTaskRequest:(BGTaskRequest *)req error:(NSError **)err {
-    NSLog(@"[BlockAlipay] 拦截 BGTask 注册");
+    BA_Log(@"拦截 BGTask 注册: %@", req);
     if (err) *err = [NSError errorWithDomain:@"BlockAlipay" code:-999 userInfo:nil];
     return NO;
 }
 %end
 
-// ========== 3. 拦截热点网络监听 ==========
+// ========== 3. Hotspot ==========
 %hook NEHotspotHelper
 + (BOOL)registerWithOptions:(NSDictionary *)opts queue:(dispatch_queue_t)q handler:(id)h {
-    NSLog(@"[BlockAlipay] 拦截 Hotspot 网络监听");
+    BA_Log(@"拦截 Hotspot 网络监听");
     return NO;
 }
 %end
 
-// ========== 4. 拦截位置唤醒 ==========
+// ========== 4. 位置 ==========
 %hook CLLocationManager
 - (void)startMonitoringSignificantLocationChanges {
-    NSLog(@"[BlockAlipay] 拦截显著位置变化监听");
+    BA_Log(@"拦截显著位置变化监听");
 }
 - (void)startMonitoringForRegion:(CLRegion *)region {
-    NSLog(@"[BlockAlipay] 拦截地理围栏监听 %@", region.identifier);
+    BA_Log(@"拦截地理围栏: %@", region.identifier);
 }
 %end
 
 // ========== 5. 入口 ==========
 %ctor {
+    BA_Log(@"========== BlockAlipayApp v1.1 注入 ==========");
+
     Method sm = class_getInstanceMethod([UIApplication class], @selector(setDelegate:));
     if (sm) {
         orig_SetDelegate = method_getImplementation(sm);
         method_setImplementation(sm, (IMP)hook_SetDelegate);
+        BA_Log(@"setDelegate: hook installed");
+    } else {
+        BA_Log(@"ERROR: setDelegate: not found");
     }
-
-    NSLog(@"[BlockAlipay] 已注入支付宝进程");
 }
