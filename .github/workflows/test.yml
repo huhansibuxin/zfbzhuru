@@ -1,7 +1,0 @@
-name: Test
-on: [push, workflow_dispatch]
-jobs:
-  test:
-    runs-on: macos-14
-    steps:
-      - run: echo "hello"
